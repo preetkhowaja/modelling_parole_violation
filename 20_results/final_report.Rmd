@@ -1,0 +1,252 @@
+---
+title: "Who's likely to get into trouble?"
+subtitle: "A statistical modelling of parole violation"
+author: "Preet Khowaja"
+date: "12/7/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r, echo=FALSE}
+library(stargazer)
+library(ggplot2)
+library(hrbrthemes)
+library(dplyr)
+library(ggfortify)
+library(xtable)
+library(arm)
+library(pROC)
+library(e1071)
+library(caret)
+library(ggplot2)
+require(gridExtra)
+options(xtable.comment = FALSE)
+options(xtable.timestamp = "")
+```
+
+```{r, echo=FALSE}
+
+## Reading in the data
+parole <- read.csv('parole.csv', 
+                   colClasses = c('factor', 'factor','numeric', 'factor', 'numeric',
+                            'numeric', 'factor', 'factor', 'numeric') )
+parole$viol_fac <- factor(parole$violator,levels=c(0,1),labels=c("No","Yes"))
+parole$crime_fac <- factor(parole$crime,levels=c(1,2,3,4),labels=c("Other","Larceny", "Drug", "Driving"))
+
+
+
+## Centering continuous predictors
+parole$ageC <- parole$age - mean(parole$age)
+parole$time.servedC <- parole$time.served - mean(parole$time.served)
+parole$max.sentenceC <- parole$max.sentence - mean(parole$max.sentence) 
+# summary(parole)
+# head(parole)
+# dim(parole)
+
+n <- nrow(parole)
+
+## Null Model
+null_model <- glm(violator ~ ageC + crime + time.servedC , data = parole, 
+                  family = 'binomial')
+
+## Full Model
+full_model <- init_model <- glm(violator ~ male * race * ageC * state * crime + 
+                                  time.servedC * max.sentenceC, 
+                                data = parole, family = 'binomial')
+final_model <- step(null_model, scope = list(upper = full_model, lower = null_model), direction = "both", trace = 0)
+
+```
+
+
+## Summary
+
+In this study, I analyzed the effect of various demographic factors on the likelihood to violate parole. I used a logistic regression model to see what factors affects the likelihood of an inmate violating parole terms. My model deems state and race of the parolee to be significant predictors and deems that the effect of age varies by type of crime committed. Age is not a significant factor in affecting likelihood of violating parole according to my model. 
+
+## Introduction
+
+The United States incarceration system was introduced to the concept of parole in the late 1800s, with the main purpose being avoiding overcrowding in prisons. Over time, the advantages of the parole system were realized. It assisted those who were capable of integration into society with a chance to rectify their mistakes. The parole system in the U.S. decrees that those prisoners who demonstrate good behaviour are allowed to be released before their jail time is over, under supervision of the parole board. There are restrictions on them during this time and if they do commit a crime, they are imprisoned or the terms of their parole are tightened. 
+
+There are many factors which could explain why parolees violate their parole, on an individual case level. If there are general factors that do seem to impact the likelihood of an inmate to commit a crime again, such as state, age or the type of crime, taking a closer look might reveal dysfunctionalities in the system of parole, indicating that changes need to be made so that the primary motivator for prisoners to violate is not caused by the way parole is structured to advantage some groups over others. For this reason, modelling the violation of parole is a worthwhile and interesting endeavour. 
+
+In this study, I am interested in three main questions of analysis about parole violation:
+
+* Does inmate age affect whether or not they will violate parole?
+* Does the state the prisoner is in affect how likely a parolee is to violate the terms of their parole?
+* Does the effect of age vary by crime?
+
+## Data
+
+The data I obtained is from the National Archive of Criminal Justice Data (NACJD) website and includes data on prison inmates who either violated or did not violate their parole in 2004. The dataset is limited to prisoners who have spent less than 6 months in prison already and were not sentenced to more than 18 months in prison for their crime. 
+
+The predictor variables in this dataset are sex, race, age, state, time.served, max.sentence. multiple.offenses, and crime. The response variable, violator, is binary and encodes whether or not a prisoner violated their parole in 2004. The data dictionary is as follows:
+
+| **Variable** | **Description** |
+|  :---:   |    :---:    |
+|  violator | 1 if prisoner violated parole; 0 otherwise |  
+|  sex | 1 if the parolee is male, 0 if female |  
+|  age | the parolee's age (in years) when he or she was released from prison |  
+| race |  1 if the parolee is white, 2 otherwise | 
+| state | a code for the parolee's state. 2 is Kentucky, 3 is Louisiana, 4 is Virginia, and 1 is any other state |
+| time.served | the number of months the parolee served in prison |
+| max.sentence | the maximum sentence length for all charges, in months (less than 18 for all) |
+| multiple.offenses | 1 if the parolee was incarcerated for multiple offenses, 0 otherwise |
+| crime | a code for the parolee's main crime leading to incarceration. 2 is larceny, 3 is drug-related crime, 4 is driving-related crime, and 1 is any other crime |
+
+### Exploratory Data Analysis 
+
+The dataset has information on 675 parolees who were observed in 2004. The states they mainly belonged to are Kentucky, Louisiana and Virginia, which is why the state variable focuses on them. The mean time served in prison by these 675 individuals is 4.19 months and the mean age of these prisoners is 35 years. I also looked at the spread of the data by the predictor variables and found that 18.4% of the inmates were female and 81.6% were male. Moreover, 42.4% of them were white and 57.6% were not. The distribution of age can be seen in the histogram below, which is interestingly fairly normal.
+
+```{r hist-age, out.width= "50%", fig.align='center', fig.cap="Distribution of parolee's ages in data", echo=FALSE}
+
+hist(parole$age,xlab="Age in years",main =  "Distribution of age",col='steelblue3')
+
+```
+
+While performing EDA, I explored the graphic relationship between continuous predictors (age, time.served and max.sentence) and the response variable (violator). Along with this, I used Pearson's Chi-squared test to check for independence between the categorical variables (race, sex, state, multiple.offenses, crime) and the response variable. 
+
+Generating boxplots for the continuous predictors revealed no clear relationship between age and violator. The median age for those who violated and those who did not is approximately the same. In comparison, the median time served in prison for violators is slightly lower than for non-violators. This could indicate a statistically significant relationship and so I decided to include time served in any model I use. Since age is also a predictor I am interested in, I didn't completely write it off and held onto it for model selection. The boxplots for maximum sentence show that non-violators have a higher maximum sentence on average than violators. These boxplots are included in Appendix A of the report, for reference. I also used binned plots for continuous predictors but did not find any noticeable trends in them that would indicate a relationship between these predictors and violator.
+
+For the categorical predictors, I performed chi-squared tests. Race, sex and type of crime had large p-values indicating that there is little evidence for them being related to violator. Multiple offenses was significant at 99% level. State had a very small p-value indicating that there is evidence it is related to violator. Hence, this is also a variable I want to explore in future models.
+
+After exploring interactions between predictors, my most interesting finding was the interaction between age and the type of crime committed. For those arrested for crimes of larceny (theft), older inmates were more likely to violate parole than younger inmates.  In comparison, for drug and driving related crimes, older inmates were **less** likely to violate parole than older inmates. This is interesting because the relationship between age and violator seems to significantly change by the type of crime (see Figure below). I decided to keep an eye out for this interaction in my model to see whether it was statistically significant. One possible insight into this interaction could be that theft, by nature, is a different type of crime. There is perhaps something unique to the nature of this crime that causes even older parolees to violate the terms of their parole. 
+
+```{r interaction, out.width= "70%", fig.align='center', fig.cap="Interaction plot between age and type of crime", echo=FALSE}
+
+ggplot(data=parole, aes(x=age, y=viol_fac,  fill = viol_fac)) + 
+  geom_boxplot() + scale_fill_manual(values = c('plum4', 'salmon2')) +
+  facet_wrap(~crime_fac)  + labs(x = 'Age in years', y = 'Violator?', colour = 'Violator')
+
+
+```
+
+Other interactions were explored but none were particularly interesting. The interactions between gender and other predictors were also not reliable since most of the inmates in our dataset are men. At the conclusion of my EDA, I have state, age and the interaction between age and crime as some predictor terms to look out for as I move onto modelling.
+
+## Modelling
+
+### Final Model
+
+The final model I use is a logistic regression with violator as a binary response as follows:
+
+$$  violator_i | x_i \sim \textrm{Bin}(n_i,\pi_i); $$
+$$ \log(\frac{\pi_i}{1-\pi_i}) = \beta_0 + \beta_1 age_i + \beta_2 state_i + \beta_3 race_i + \beta_4 crime_i + $$
+$$ \beta_5 time.served_i + \beta_6 age_i:crime_i $$
+
+### Model Selection Process
+
+Before any kind of modelling, I centered the continuous predictors in order to aid in the interpretation of coefficients that were output from models I created. I then created a null model which included only the predictors age, type of crime and the time served in prison before parole was granted since these are variables I'm interested in and necessarily want them in my model. My full model included all the variables and interactions possible. I then used AIC and BIC stepwise selection methods on these null and full models. AIC Stepwise gave me the final model I have mentioned in the previous sub-section whereas BIC stepwise gave me the same model without the predictors race and the interaction between age and type of crime. I used a chi-squared test to see if these two predictors were significant and they were. Hence, my final model is the AIC stepwise model. 
+
+
+### Model Evaluation
+
+In order to assess how my model stands on the assumptions of linear regression I looked at the binned residual plots to ensure there was random-ness and the points were captured within the confidence bands. I noticed that there were quite a few points outside the confidence bands and so I tried two transformations on the response variable including log() and square root. However, neither fixed the problem so I chose to work with the model without transformations. The binned residual plot is below.
+
+```{r bin_res1, out.width= "60%", fig.align='center', fig.cap="Binned Residual Plot of Final Model", echo=FALSE}
+rawresfinal <- residuals(final_model, "resp")
+binnedplot(x=fitted(final_model),y=rawresfinal, xlab="Pred. probabilities",
+           col.int="red3",ylab="Avg. residuals",main="Binned residual plot",
+           col.pts="steelblue3")
+```
+
+
+I also plotted each binned centered continuous predictor in our model against average residuals to ensure there were no visible trends. The binned residual plots for age and time served in prison had randomness and displayed no visible trends. Furthermore, the points were mostly inside the confidence bands. These plots are in Appendix B. 
+
+With my current model, I am able to achieve a specificity of 82% and sensitivity of 76% and plotting the ROC Curves gives us an AUC of 0.85 which means our model does quite well on predicting whether or not a parolee will violate. The ROC curve is included in Appendix C.
+
+### Results
+
+The table below shows the results of our fitted final model. 
+
+```{r, results = "asis", echo=FALSE, out.width= "70%", warning = FALSE, message = FALSE}
+xtable(final_model)
+
+```
+
+The significant coefficients in my model are those for state and race as well as the interaction term between age and driving related crimes. The intercept of my model deems that at average age and time served, a non-white parolee in an 'other' state who has not committed a drug, driving or theft related crime has odds of 0.15 of violating their parole.
+
+According to this model, a parolee with the baseline characteristics described above, is 3.27 times more likely to violate parole if they are in Louisiana as compared to being in the 'other' state category and 0.07 times as likely to violate if they are in Virginia. The coefficient for Kentucky is not significant in my model. Moreover, a parolee with baseline characteristics is less likely to violate parole as age increases if they have committed driving crimes as compared to 
+other crimes. White parolees at the baseline are twice as likely to violate as non-white parolees. With this, we've looked at all the coefficients that are significant in our model. 
+
+## Conclusions
+
+Conclusively, we look at what my model says about the questions of interest. Age in my model, is not a significant predictor and the coefficient suggests that the odds of violating do not change with age. In comparison the state of the parolee is very significant. this suggests that rather than age demographics it is the location of the prisoner that influences their likelihood to violate parole. The details of parole law vary by state and could explain this significance. Finally, there is evidence that while the effect of age on its own is not significant, it varies by the type of crime committed and driving related crimes reduce the effect age have on likelihood to violate. 
+
+It is important to note that there are limitations in this study, primarily due to the limitedness of data. The study is also limited to 2004 and a particular subset of prisoners (those who have served less than 6 months in prison already and not been sentenced to more than 18 months) which makes the conclusions difficult to generalize. Furthermore, parole is a complex legal process and there are many factors which are not included in this dataset such as the terms of parole and employments status of parolees. 
+
+\newpage
+
+# Appendix A
+
+```{r boxplot-age, out.width= "50%", fig.align='center', fig.cap="Age vs Violator", echo=FALSE}
+## Age vs violation
+## almost no change in trends. I would assume the younger people are less 
+##likely to violate
+ggplot(parole,aes(x=viol_fac, y=age, fill=viol_fac)) +
+  geom_boxplot() + #coord_flip() +
+  scale_fill_brewer(palette="Blues") +
+  labs(title="Age vs Violator",
+       x="Violator",y="Age in years") + 
+  theme_classic() + theme(legend.position="none") +
+scale_x_discrete(labels=c("0" = "No","1" = "Yes"))
+```
+
+```{r boxplot-timeserv, out.width= "50%", fig.align='center', fig.cap="Time Served vs Violator", echo=FALSE}
+## Age vs violation
+## almost no change in trends. I would assume the younger people are less 
+##likely to violate
+ggplot(parole,aes(x=viol_fac, y=time.served, fill=viol_fac)) +
+  geom_boxplot() + #coord_flip() +
+  scale_fill_brewer(palette="Blues") +
+  labs(title="Time served vs Violator",
+       x="Violator",y="Time served in months") + 
+  theme_classic() + theme(legend.position="none") +
+  scale_x_discrete(labels=c("0" = "No","1" = "Yes"))
+```
+
+```{r boxplot-maxsent, out.width= "50%", fig.align='center', fig.cap="Maximum Sentence vs Violator", echo=FALSE}
+## Age vs violation
+## almost no change in trends. I would assume the younger people are less 
+##likely to violate
+ggplot(parole,aes(x=viol_fac, y=max.sentence, fill=viol_fac)) +
+  geom_boxplot() + #coord_flip() +
+  scale_fill_brewer(palette="Blues") +
+  labs(title="Maximum sentence vs violator",
+       x="Violator",y="Max sentence in months") + 
+  theme_classic() + theme(legend.position="none") +
+  scale_x_discrete(labels=c("0" = "No","1" = "Yes"))
+```
+
+
+\newpage
+
+# Appendix B
+
+
+
+```{r bin_res2, out.width= "60%", fig.align='center', fig.cap="Binned Residual Plot of Predictors", echo=FALSE}
+## Raw residuals with Age Centered
+binnedplot(x=parole$ageC, y=rawresfinal, xlab="Age centered",
+           col.int="red3",ylab="Avg. residuals",main="Binned residual plot",col.pts="steelblue3")
+
+
+## Raw residuals with Time served Centered
+binnedplot(x=parole$time.servedC, y=rawresfinal, xlab="Time served (months) centered",
+           col.int="red3",ylab="Avg. residuals",main="Binned residual plot",col.pts="steelblue3")
+
+```
+
+
+\newpage
+
+# Appendix C
+
+```{r roc, out.width= "60%", fig.align='center', fig.cap="ROC for Final Model", echo=FALSE, warning = FALSE, message = FALSE, results='hide'}
+
+roc(parole$violator,fitted(final_model),plot=T,print.thres="best",legacy.axes=T,
+    print.auc =T,col="magenta4")
+
+```
+
+
